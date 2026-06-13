@@ -37,10 +37,37 @@ async function useSupabaseAuthState(sessionId = 'main-session') {
     }
   };
 
+  // Wrap plain `keys` object into a proper SignalKeyStore interface
+  const keyStore = {
+    get: async (type, ids) => {
+      const result = {};
+      const typeData = keys[type] || {};
+      for (const id of ids) {
+        if (typeData[id] !== undefined) {
+          result[id] = typeData[id];
+        }
+      }
+      return result;
+    },
+    set: async (data) => {
+      for (const category in data) {
+        keys[category] = keys[category] || {};
+        for (const id in data[category]) {
+          if (data[category][id] === null) {
+            delete keys[category][id];
+          } else {
+            keys[category][id] = data[category][id];
+          }
+        }
+      }
+      await saveState();
+    }
+  };
+
   return {
     state: {
       creds,
-      keys: makeCacheableSignalKeyStore(keys, console.log, saveState)
+      keys: makeCacheableSignalKeyStore(keyStore, console)
     },
     saveCreds: saveState
   };
