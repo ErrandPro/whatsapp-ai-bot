@@ -11,7 +11,7 @@ app.use('/', router);
 
 // Health check - keeps Render alive
 app.get('/ping', (req, res) => {
-  res.json({ status: 'alive', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok' });
 });
 
 const PORT = process.env.PORT || 3000;
