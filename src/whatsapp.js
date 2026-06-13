@@ -1,6 +1,5 @@
 const {
   default: makeWASocket,
-  useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
@@ -8,11 +7,8 @@ const {
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 const axios = require('axios');
-const path = require('path');
-const fs = require('fs');
-
-// Auth state stored in /tmp (Render-compatible)
-const AUTH_FOLDER = process.env.AUTH_FOLDER || '/tmp/auth_info';
+const { createClient } = require('@supabase/supabase-js');
+const { useSupabaseAuthState } = require('./supabaseAuthState');
 
 let sock = null;
 let qrCodeData = null;
@@ -22,12 +18,7 @@ const logger = pino({ level: 'silent' });
 
 async function connectWhatsApp() {
   try {
-    // Ensure auth folder exists
-    if (!fs.existsSync(AUTH_FOLDER)) {
-      fs.mkdirSync(AUTH_FOLDER, { recursive: true });
-    }
-
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
+    const { state, saveCreds } = await useSupabaseAuthState('main-session');
     const { version } = await fetchLatestBaileysVersion();
 
     console.log(`📱 Using Baileys version: ${version.join('.')}`);
@@ -38,17 +29,15 @@ async function connectWhatsApp() {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
-      printQRInTerminal: false, // We handle QR ourselves
+      printQRInTerminal: false,
       logger,
       browser: ['Chrome (Linux)', 'Chrome', '120.0.0'],
       syncFullHistory: false,
-      markOnlineOnConnect: false, // Less suspicious
+      markOnlineOnConnect: false,
     });
 
-    // Save credentials whenever updated
     sock.ev.on('creds.update', saveCreds);
 
-    // Handle connection updates
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
@@ -77,19 +66,17 @@ async function connectWhatsApp() {
           setTimeout(connectWhatsApp, 5000);
         } else {
           console.log('🚪 Logged out. Please re-scan QR code.');
-          // Clear auth to force fresh QR
-          fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
+          const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+          await supabase.from('whatsapp_sessions').delete().eq('id', 'main-session');
           setTimeout(connectWhatsApp, 3000);
         }
       }
     });
 
-    // Handle incoming messages
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return;
 
       for (const msg of messages) {
-        // Skip if message is from self or is a status update
         if (msg.key.fromMe) continue;
         if (msg.key.remoteJid === 'status@broadcast') continue;
 
@@ -109,20 +96,18 @@ async function handleIncomingMessage(msg) {
     const from = msg.key.remoteJid;
     const isGroup = from.endsWith('@g.us');
 
-    // Extract message text
     const text =
       msg.message?.conversation ||
       msg.message?.extendedTextMessage?.text ||
       msg.message?.imageMessage?.caption ||
       null;
 
-    if (!text) return; // Ignore non-text messages for now
+    if (!text) return;
 
     const senderNumber = from.replace('@s.whatsapp.net', '').replace('@g.us', '');
 
     console.log(`📨 Message from ${senderNumber}: ${text}`);
 
-    // Only process messages from allowed contacts (if configured)
     const allowedContacts = process.env.ALLOWED_CONTACTS
       ? process.env.ALLOWED_CONTACTS.split(',').map(c => c.trim())
       : null;
@@ -132,7 +117,6 @@ async function handleIncomingMessage(msg) {
       return;
     }
 
-    // Forward to n8n webhook
     const n8nWebhookUrl = process.env.N8N_WEBHOOK_URL;
     if (!n8nWebhookUrl) {
       console.log('⚠️ N8N_WEBHOOK_URL not set. Message not forwarded.');
@@ -166,16 +150,13 @@ async function sendMessage(jid, text) {
     throw new Error('WhatsApp not connected');
   }
 
-  // Add human-like delay (1-3 seconds)
   const delay = Math.floor(Math.random() * 2000) + 1000;
   await new Promise(resolve => setTimeout(resolve, delay));
 
-  // Show typing indicator
   await sock.sendPresenceUpdate('composing', jid);
   await new Promise(resolve => setTimeout(resolve, delay));
   await sock.sendPresenceUpdate('paused', jid);
 
-  // Send message
   const result = await sock.sendMessage(jid, { text });
   console.log(`📤 Message sent to ${jid}`);
   return result;
